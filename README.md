@@ -2,7 +2,7 @@
 
 Visible wild encounters for Pokémon SDK. Wild creatures walk around the map, and you fight one by talking to it. They replace the random step encounters.
 
-- **Version:** 1.0.0.0
+- **Version:** 1.2.0.0
 - **Author:** ralandel
 - **Dependencies:** none
 
@@ -18,6 +18,7 @@ Visible wild encounters for Pokémon SDK. Wild creatures walk around the map, an
 6. [Monkey-patching](#monkey-patching)
 7. [Public API reference](#public-api-reference)
 8. [Technical notes and limitations](#technical-notes-and-limitations)
+9. [Changelog](#changelog)
 
 ---
 
@@ -26,7 +27,7 @@ Visible wild encounters for Pokémon SDK. Wild creatures walk around the map, an
 When a category is enabled, the plugin does two things:
 
 1. It **turns off random step encounters** on the system tags of that category.
-2. It **spawns wild creatures as map events** on those tags. The creatures come from the wild groups defined in Pokémon Studio for the current zone.
+2. It **spawns wild creatures as map events** on those tags, around the player. The creatures come from the wild groups defined in Pokémon Studio for the current zone.
 
 ### The three categories
 
@@ -45,22 +46,34 @@ When a category is **disabled**, its tags keep the classic random encounters.
 - **Same data as classic encounters.** A creature is picked from the group with its `encounter_rate`, so a 1% creature has a 1% chance to be picked at each spawn. The level range, shiny rate, form and extra data all come from Studio. Synchronize, Compound Eyes, Super Luck and the max-level abilities (Hustle, Pressure, Vital Spirit) apply as usual. Repel stops creatures weaker than your lead from spawning.
 - **Shiny creatures look shiny on the map.** They use the shiny overworld charset directly.
 - **Animated while standing still.** Creatures wander randomly, and they fade in when they spawn and fade out when they despawn.
+- **Movement depends on the species.**
+  - Move speed follows base Speed: below 50 gives slow (2), 50 to 100 gives normal (3), above 100 gives fast (4).
+  - Each creature gets a random move frequency between 2 and 4, so they don't all move at the same moment.
 - **They stay in their zone.** A creature only walks on tiles with the same system tag and terrain tag as its group. A creature from a `grass` group never leaves `TGrass`. Water creatures can stand on water.
+- **Only around the player.** The active area is the screen plus a margin.
+  - Creatures spawn within the screen plus 6 tiles.
+  - They are unloaded once they are more than the screen plus 8 tiles away from the player.
+  - The event count stays low, even on huge maps.
+- **Always populated.** Each category has a **target population**, worked out from how many of its tiles are around the player (see `TARGET_FILL`).
+  - On arrival, the whole area is filled at once.
+  - Every `REFILL_INTERVAL` seconds (0.5 by default), missing creatures are spawned, up to `SPAWNS_PER_REFILL` each time.
+  - Refills try tiles **outside the screen first**, so new creatures appear ahead of the player instead of popping in view.
+  - Walking from one zone to another, or coming back to a zone you left, you always find creatures there.
 - **Density limits:**
   - Grass: at most 3 creatures in any 5×5 area.
   - Water: at most 5 in any 7×7 area.
   - Other: at most 4 in any 6×6 area.
-  - There is also a hard cap per map (`MAX_PER_MAP`).
-- **When they spawn:**
-  - When the player arrives on a map.
-  - Every `CHECK_INTERVAL` seconds (10 by default).
-  - Right after a creature despawns.
-- **Lifetime.** A creature despawns on its own after `LIFETIME` seconds (120 by default). The timer only runs while the map is active, so it pauses during battles and menus.
+  - There is also a hard cap per map (`MAX_PER_MAP`, 25 by default).
+- **Cheap to compute.**
+  - When a map loads, every tile is indexed once by system tag, terrain tag and 4×4 chunk.
+  - The candidate tiles around the player are only recomputed when the player enters another chunk, not on every step.
+  - Each refill only samples that cached list.
+- **Lifetime.** Each creature gets a random lifetime between `LIFETIME_MIN` and `LIFETIME_MAX` seconds (90 to 150 by default), then despawns on its own. The timer only runs while the map is active, so it pauses during battles and menus.
 - **When nothing spawns.** Creatures never spawn close to the player, during an event, while the player has no Pokémon able to battle, or while encounters are disabled with the *Change Encounter* event command.
 
 ### Battle
 
-Talking to a creature (action button) starts a wild battle. It is exactly the battle the *Wild Battle* common event would start: same transition, same sound effect, same Safari support.
+Talking to a creature (action button) plays its cry and starts a wild battle. It is exactly the battle the *Wild Battle* common event would start: same transition, same sound effect, same Safari support.
 
 During that battle, **the player counts as standing on the creature's tile**:
 
@@ -107,20 +120,37 @@ The default values live in `000 Config.rb`:
 | `DISABLE_SWITCH`            | `nil`   | Switch ID that suspends the system while ON (`nil` = no switch) |
 | `CATEGORY_TAGS`             | see file | System tag db_symbols for `:water` and `:grass`. Everything else is `:other` |
 | `DENSITY`                   | see above | `{ category => { size:, max: } }` |
-| `MAX_PER_MAP`               | `50`    | Maximum creatures on one map |
-| `CHECK_INTERVAL`            | `10`    | Seconds between two spawn checks |
-| `LIFETIME`                  | `120`   | Seconds before a creature despawns |
+| `MAX_PER_MAP`               | `25`    | Maximum creatures on one map |
+| `TARGET_FILL`               | `0.6`   | Fraction (0.0–1.0) of the maximum density each category aims for on its tiles around the player |
+| `REFILL_INTERVAL`           | `0.5`   | Seconds between two refills |
+| `SPAWNS_PER_REFILL`         | `2`     | Maximum creatures spawned by one refill (arrival on a map fills everything at once) |
+| `LIFETIME_MIN`              | `90`    | Minimum lifetime of a creature, in seconds |
+| `LIFETIME_MAX`              | `150`   | Maximum lifetime of a creature, in seconds |
 | `FRAMES_PER_SECOND`         | `60`    | Logic frames per second, used to convert the durations |
-| `INITIAL_SPAWN_ATTEMPTS`    | `10`    | Spawn attempts when arriving on a map |
-| `SPAWN_ATTEMPTS_PER_CHECK`  | `3`     | Spawn attempts at each periodic check |
-| `SPAWN_ATTEMPTS_ON_DESPAWN` | `1`     | Spawn attempts triggered by each despawn |
-| `SPAWN_CHANCE`              | `70`    | % chance that a periodic attempt spawns something |
-| `TILE_TRIES`                | `8`     | Random tiles tested per attempt |
+| `TILE_TRIES`                | `12`    | Random tiles tested per spawn. During refills, the first half only accepts tiles outside the screen |
+| `INDEX_CHUNK_SIZE`          | `4`     | Chunk size (tiles) of the spatial index. Candidates are recomputed when the player changes chunk |
 | `MIN_PLAYER_DISTANCE`       | `3`     | No spawn within this many tiles of the player |
-| `MOVE_SPEED`                | `3`     | Event move speed (1–6) |
-| `MOVE_FREQUENCY`            | `3`     | Event move frequency (1–6) |
+| `SPAWN_AREA_MARGIN`         | `6`     | Creatures spawn within screen size + this many tiles around the player |
+| `UNLOAD_AREA_MARGIN`        | `8`     | Creatures beyond screen size + this many tiles are unloaded. Keep it ≥ `SPAWN_AREA_MARGIN` |
+| `SLOW_BASE_SPEED`           | `50`    | Base Speed below this value gives `MOVE_SPEED_SLOW` |
+| `FAST_BASE_SPEED`           | `100`   | Base Speed above this value gives `MOVE_SPEED_FAST` |
+| `MOVE_SPEED_SLOW`           | `2`     | Event move speed of slow species (1–6) |
+| `MOVE_SPEED_NORMAL`         | `3`     | Event move speed of the other species (1–6) |
+| `MOVE_SPEED_FAST`           | `4`     | Event move speed of fast species (1–6) |
+| `MOVE_FREQUENCY_MIN`        | `2`     | Minimum random move frequency (1–6) |
+| `MOVE_FREQUENCY_MAX`        | `4`     | Maximum random move frequency (1–6) |
 | `FADE_STEP`                 | `16`    | Opacity change per frame for the fades (`255` = no fade) |
 | `EVENT_ID_BASE`             | `100000`| First event ID used by the creatures |
+
+The screen size comes from `Game_Map::NUM_TILE_VIEW_X` / `NUM_TILE_VIEW_Y`, so the active area follows your project's resolution.
+
+**How the target population is computed.** Take a category with `T` tiles in the spawn area around the player:
+
+```
+target = round(T × DENSITY.max / DENSITY.size² × TARGET_FILL)   (at least 1 when T > 0)
+```
+
+For example, 100 grass tiles with a density of 3 per 5×5 and a `TARGET_FILL` of 0.6 give 100 × 3 / 25 × 0.6 ≈ 7 grass creatures. `MAX_PER_MAP` still caps the total across all categories.
 
 ### Changing a setting
 
@@ -132,8 +162,9 @@ Project scripts are loaded **after** plugins. Create a project script anywhere u
 OverworldEncounter.configure(
   DISABLE_SWITCH: 42,      # Switch 42 suspends the system
   WATER_ENCOUNTER: false,  # Keep classic random encounters on water
-  LIFETIME: 90,
-  MAX_PER_MAP: 25,
+  LIFETIME_MIN: 60,
+  LIFETIME_MAX: 120,
+  MAX_PER_MAP: 15,
   DENSITY: {
     grass: { size: 5, max: 2 },
     water: { size: 7, max: 5 },
@@ -158,7 +189,7 @@ Set `DISABLE_SWITCH` (see [Configuration](#configuration)). While that switch is
 - nothing spawns;
 - **classic random encounters come back** on every tag.
 
-Turn the switch OFF and the system resumes on its own, with new creatures at the next check. This is the best option for cutscenes, scripted areas or story phases, because the switch is saved with the game.
+Turn the switch OFF and the system resumes on its own: missing creatures come back within the next refills. This is the best option for cutscenes, scripted areas or story phases, because the switch is saved with the game.
 
 ### 2. With a script call (temporary, not saved)
 
@@ -177,14 +208,14 @@ This flag lives in memory only. It resets when the game restarts, and loading a 
 OverworldEncounter.despawn_all
 ```
 
-New creatures will spawn again at the next check. This is useful before a cutscene that needs a clear path.
+New creatures spawn again with the next refills (unless the system is suspended). This is useful before a cutscene that needs a clear path.
 
 ### 4. Pause spawning only (*Change Encounter* event command)
 
 While encounters are disabled with RMXP's *Change Encounter* command (`$game_system.encounter_disabled`):
 
 - **no new creature spawns**;
-- creatures already on the map stay until their lifetime ends.
+- creatures already on the map stay until their lifetime ends or they get unloaded.
 
 ### 5. Turn one category on or off during the game
 
@@ -267,6 +298,37 @@ OverworldEncounter.singleton_class.prepend(OverworldEncounterGroupFilter)
 
 > The random encounter blocker works per tag, not per group. If you filter a group out, that tag also needs to go back to classic encounters, otherwise the group will never be met. To do that, also override `blocks_random_encounter?`.
 
+### Change the active area shape
+
+`around_player?(x, y, margin)` decides both the spawn area and the unload area. For example, to use a circle instead of the screen rectangle:
+
+```ruby
+module OverworldEncounterCircleArea
+  def around_player?(x, y, margin)
+    radius = 10 + margin
+    dx = x - $game_player.x
+    dy = y - $game_player.y
+    return dx * dx + dy * dy <= radius * radius
+  end
+end
+OverworldEncounter.singleton_class.prepend(OverworldEncounterCircleArea)
+```
+
+### Custom move speed per species
+
+`move_speed_for(pokemon)` is a class method of `OverworldEncounter::OverworldEvent`:
+
+```ruby
+module OverworldEncounterCustomSpeed
+  def move_speed_for(pokemon)
+    return 5 if pokemon.db_symbol == :ninjask
+
+    return super
+  end
+end
+OverworldEncounter::OverworldEvent.singleton_class.prepend(OverworldEncounterCustomSpeed)
+```
+
 ### Change how creatures are generated
 
 `generate_creature(group)` is private, but you can still override it with `prepend`. Keep your override private as well:
@@ -291,20 +353,10 @@ The other private methods you can override the same way:
 - `density_ok?(x, y, category)`
 - `pick_encounter(encounters)`
 - `can_spawn_now?`
-
-### Play the creature's cry before the battle
-
-```ruby
-module OverworldEncounterCry
-  def interact(event_id)
-    entry = OverworldEncounter.instance_variable_get(:@entries)[event_id]
-    Audio.se_play(entry.pokemon.cry) if entry && !entry.despawning
-
-    super
-  end
-end
-OverworldEncounter.singleton_class.prepend(OverworldEncounterCry)
-```
+- `unload_far_entries`
+- `category_targets(categories)` (change how many creatures each category aims for)
+- `most_needed_category(targets, exhausted)`
+- `pick_group(groups)`
 
 ### Change the creature event itself
 
@@ -341,12 +393,14 @@ OverworldEncounter::OverworldEvent.prepend(OverworldEventCustom)
 | `OverworldEncounter.blocks_random_encounter?(system_tag)` | Whether classic encounters are blocked on that tag |
 | `OverworldEncounter.spawnable_group?(group)` | Whether a `Studio::Group` may spawn creatures |
 | `OverworldEncounter.tile_matches_group?(x, y, group)` | Whether a tile belongs to a group's zone |
+| `OverworldEncounter.around_player?(x, y, margin)` | Whether a tile is within screen size + `margin` tiles of the player |
+| `OverworldEncounter::OverworldEvent.move_speed_for(pokemon)` | Move speed of a creature event |
 
 ### Called by the creature event
 
 | Method | Description |
 |--------|-------------|
-| `OverworldEncounter.interact(event_id)` | Starts the battle (used by the creature event) |
+| `OverworldEncounter.interact(event_id)` | Plays the cry and starts the battle (used by the creature event) |
 
 ### Engine hooks
 
@@ -363,10 +417,48 @@ The plugin hooks into the engine with `prepend` only:
 
 ## Technical notes and limitations
 
-- **Nothing is saved.** Creatures are temporary. After loading a save, the map fills up again with new creatures.
+- **Nothing is saved.** Creatures are temporary. After loading a save, the area around the player fills up again with new creatures.
 - **Roaming Pokémon** use the same trigger as random encounters, so they cannot be met on tags handled by the plugin.
+- **`:custom_all` groups** (map-wide forced groups) are left alone. They neither spawn nor get blocked.
 - **Encounter-rate abilities** (Static, Magnet Pull, Cute Charm, Flash Fire, Storm Drain, Harvest, Intimidate/Keen Eye) do not change which creature spawns.
-- **First spawn on a map.** The plugin scans every tile of the map once. This is instant on normal maps, but very large maps may hitch briefly the first time.
+- **First spawn on a map.** The plugin scans every tile of the map once to build its spatial index. That takes a few dozen milliseconds on a 200×120 map, and the index is then reused until the map changes.
 - **MapLinker.** Creatures only spawn inside the current map, never on linked maps.
 - **Compatible with the PSDK event culling** (Events Optimizer) and with any plugin that also uses `prepend` on the same classes.
 - **Event IDs** start at `EVENT_ID_BASE` (100000) so they never collide with map events.
+
+---
+
+## Changelog
+
+### 1.2.0.0
+
+- **Changed: spawning is driven by a target population.**
+  - Each category aims for a population computed from its tiles around the player (`TARGET_FILL`).
+  - Missing creatures are spawned every `REFILL_INTERVAL` (0.5 s), up to `SPAWNS_PER_REFILL` each time.
+  - Arriving on a map fills the whole area at once.
+  - New areas, and areas you come back to, are no longer empty.
+- **Added: refills prefer tiles outside the screen**, so new creatures appear ahead of the player.
+- **Optimized: spatial tile index.** Tiles are indexed by tag and by chunk (`INDEX_CHUNK_SIZE`). The candidate tiles around the player are cached and only recomputed when the player enters another chunk.
+- **Removed:** `CHECK_INTERVAL`, `INITIAL_SPAWN_ATTEMPTS`, `SPAWN_ATTEMPTS_PER_CHECK`, `SPAWN_ATTEMPTS_ON_DESPAWN` and `SPAWN_CHANCE`. They are replaced by `TARGET_FILL`, `REFILL_INTERVAL` and `SPAWNS_PER_REFILL`. Update your `configure` call if it used them.
+- **Changed:** `TILE_TRIES` now defaults to 12.
+
+### 1.1.0.0
+
+- **Added: active area.**
+  - Creatures only spawn within the screen plus `SPAWN_AREA_MARGIN` tiles (6) around the player.
+  - They are unloaded beyond the screen plus `UNLOAD_AREA_MARGIN` tiles (8).
+  - Each unload triggers a spawn near the player.
+- **Added: move speed by base Speed.** Below 50 gives 2, 50 to 100 gives 3, above 100 gives 4.
+- **Added: random move frequency** between 2 and 4, plus a random initial delay, so creatures don't move in sync.
+- **Changed: random lifetime.** It is now between `LIFETIME_MIN` and `LIFETIME_MAX` (90–150 s). This replaces the fixed `LIFETIME`.
+- **Changed:** `MAX_PER_MAP` now defaults to 25.
+- **Removed:** `LIFETIME`, `MOVE_SPEED` and `MOVE_FREQUENCY`. They are replaced by the settings above. Update your `configure` call if it used them.
+
+### 1.0.1.0
+
+- **Fixed:** a crash (`undefined method 'unlock' for nil`) after defeating or fleeing from an overworld creature. The creature's event was removed before the interpreter had finished running it. The creature is now hidden as soon as the battle ends and removed once its event is done.
+- **Added:** the creature plays its cry when the player interacts with it.
+
+### 1.0.0.0
+
+- Initial release.
