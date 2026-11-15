@@ -365,7 +365,6 @@ The plugin hooks into the engine with `prepend` only:
 
 - **Nothing is saved.** Creatures are temporary. After loading a save, the map fills up again with new creatures.
 - **Roaming Pokémon** use the same trigger as random encounters, so they cannot be met on tags handled by the plugin.
-- **`:custom_all` groups** (map-wide forced groups) are left alone. They neither spawn nor get blocked.
 - **Encounter-rate abilities** (Static, Magnet Pull, Cute Charm, Flash Fire, Storm Drain, Harvest, Intimidate/Keen Eye) do not change which creature spawns.
 - **First spawn on a map.** The plugin scans every tile of the map once. This is instant on normal maps, but very large maps may hitch briefly the first time.
 - **MapLinker.** Creatures only spawn inside the current map, never on linked maps.
